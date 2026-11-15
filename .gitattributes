@@ -1,0 +1,9 @@
+# 统一用 LF：client.bundle.js 由构建脚本按源文件字节生成，
+# 如果 Windows 检出时把 .js 转成 CRLF，CI 的 --check 会误报 bundle 过期。
+* text=auto eol=lf
+
+*.png binary
+*.gif binary
+*.jpg binary
+*.jpeg binary
+*.webp binary

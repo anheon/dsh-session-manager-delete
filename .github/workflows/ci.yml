@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    # verify-host 里有 Windows junction 用例，先只在 Windows 上跑；
+    # 插件本身跨平台，POSIX 覆盖可以后续再加。
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Check client bundle is up to date
+        run: node scripts/build-client.mjs --check
+
+      - name: Verify host
+        run: node scripts/verify-host.mjs
+
+      - name: Verify client
+        run: node scripts/verify-client.mjs

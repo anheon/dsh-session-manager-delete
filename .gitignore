@@ -1,0 +1,23 @@
+# 依赖与打包产物
+node_modules/
+*.tgz
+
+# 日志
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# 系统与编辑器
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# 本地临时目录（验证脚本自己在系统临时目录里跑，不需要在这里留）
+coverage/
+.tmp/
+
+# 注意：lib/client.bundle.js 是客户端运行时真正加载的产物，必须提交；
+# 不要忽略 lib/。构建是否过期由 `node scripts/build-client.mjs --check` 检查。

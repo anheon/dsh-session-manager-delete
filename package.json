@@ -1,0 +1,64 @@
+{
+  "name": "dsh-session-manager-delete",
+  "version": "0.6.0",
+  "description": "DSH 会话删除插件：只删已归档的会话，先关终端、注销宿主内存，再删日志与缓存、摘工作区登记、清浏览器本地状态；删完不需要刷新页面。",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "session",
+    "delete",
+    "cleanup"
+  ],
+  "author": "anheon",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": {
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "default": "./lib/client.bundle.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "build": "node scripts/build-client.mjs",
+    "check:host": "node scripts/verify-host.mjs",
+    "check:bundle": "node scripts/build-client.mjs --check",
+    "check:client": "node scripts/build-client.mjs --check && node scripts/verify-client.mjs",
+    "test": "node scripts/build-client.mjs && node scripts/verify-host.mjs && node scripts/verify-client.mjs"
+  },
+  "files": [
+    "lib",
+    "scripts",
+    "docs",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/anheon/dsh-session-manager-delete.git"
+  },
+  "homepage": "https://github.com/anheon/dsh-session-manager-delete#readme",
+  "bugs": {
+    "url": "https://github.com/anheon/dsh-session-manager-delete/issues"
+  },
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/",
+    "access": "public"
+  },
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  }
+}
