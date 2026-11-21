@@ -120,7 +120,7 @@ npm run build          # 改了 lib/client.js 必须重新构建
 - 要摘的工作区登记、要清的浏览器本地状态；
 - 旧幽灵的悬空引用（如果有），以及「现在清理」入口；
 - 有工作在跑时的「先停掉」勾选；
-- 可选连带删除的 fork 列表（勾了才会删，且 fork 自己也必须已归档）；
+- 可选连带删除的 fork 列表（勾选后清单会更新，包含 fork 及其子代理的日志、登记和本地状态；fork 自己也必须已归档）；
 - 哪些东西**不会**被删。
 
 删除成功后，插件会调用 DSH 的 `ctx.sessions.refresh()` 重拉权威列表。正常情况下侧栏里的那一行会直接消失，不需要刷新页面。
@@ -162,7 +162,7 @@ npm run build          # 改了 lib/client.js 必须重新构建
 | 注销能力 | 两个宿主注册表必须是 `store` Map + `detachEntered` 形状 | 拒绝，什么都不动 |
 | 确认 | POST 必须带 `confirm: 'delete-session'`，界面还要勾选确认框 | 400 |
 | 同源 | `Sec-Fetch-Site` 只接受 same-origin/none；删除要求 Origin/Host 同源且 Host 是 IP 字面量或 localhost | 403 |
-| 清单 | 只删查询时算出来、并给用户看过的路径和 id | 清单外的东西不碰 |
+| 清单 | 确认时提交预览版本，宿主复核会话、路径与登记范围；确认框会另列需补写落盘的会话 | 409，重新预览并确认 |
 | 复核 | 注销后复核内存，删完复核磁盘，摘完复核登记 | 409 / 500，如实报告 |
 
 删除顺序本身也是安全设计：
@@ -180,7 +180,7 @@ flowchart LR
 ```
 
 - **先关终端再注销**：终端按属主对象身份匹配，注销后就找不到那个对象了。
-- **先删可重建的缓存，最后删日志**：中途失败时尽量保住一条完整、可重试的会话。
+- **先删可重建的缓存，最后删日志**：整批缓存清理和复核都通过后才开始删日志；缓存阶段失败时保留日志和登记。
 - **删干净才摘登记**：否则会留下「界面里没有、磁盘上还在」的孤儿。
 - **注销没生效就拒删**：宁可不让删，也不硬删之后留一颗刷新去不掉的幽灵。
 
@@ -192,8 +192,8 @@ flowchart LR
 
 | 请求 | 作用 |
 | --- | --- |
-| `GET /dsh-session-manager-delete/api?id=<sessionId>` | 只读预览：能不能删、会删什么、有什么阻断项 |
-| `POST /dsh-session-manager-delete/api` `{id, confirm, dangling, extraRoots?, stop?}` | 删除 |
+| `GET /dsh-session-manager-delete/api?id=<sessionId>&extraRoots=<forkId>` | 只读预览。每个选中的 fork 对应一个可选的 `extraRoots` 参数，可删除时返回 `session.preview` |
+| `POST /dsh-session-manager-delete/api` `{id, confirm, preview, dangling, extraRoots?, stop?}` | 删除。带上同一组选项和最近一次确认的 `session.preview` |
 | `POST /dsh-session-manager-delete/api` `{repair: true, confirm}` | 只清工作区登记里的悬空引用，不删磁盘 |
 
 返回状态：
@@ -204,9 +204,9 @@ flowchart LR
 | 400 | id/请求体/清单形状不对，或超过 200 条；什么都没动 |
 | 403 | 跨站或 Host 不是 IP 字面量/localhost；什么都没动 |
 | 404 | 会话已经不存在；没什么可删的 |
-| 409 | 没归档、注销能力不可用、注销没生效、还有工作在跑且没停、目标超过 200；文件与登记保持原样 |
+| 409 | 清单变化、取消归档、注销或活动检查未通过、目标超过 200。清单变化时返回 `PREVIEW_CHANGED`，客户端应重新预览并确认 |
 | 413 | 请求体过大；什么都没动 |
-| 500 | 文件没删净；登记保持原样，但终端可能已关、宿主内存已注销，残留路径会逐条列出 |
+| 500 | 文件操作或磁盘复核失败。缓存阶段失败时保留日志和登记；终端可能已关、宿主内存可能已注销 |
 
 成功不是「试过了」，而是注销后复核、删完扫盘、摘完查登记都通过才回 200。
 
@@ -223,10 +223,10 @@ npm run build
 # 检查 bundle 是否过期（不写文件）
 npm run check:bundle
 
-# 宿主端到端测试（315 项）
+# 宿主端到端测试
 npm run check:host
 
-# 浏览器半区行为测试（201 项）
+# 浏览器半区行为测试
 npm run check:client
 
 # 全部：构建 + 宿主 + 浏览器

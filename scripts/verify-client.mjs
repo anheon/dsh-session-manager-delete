@@ -505,6 +505,7 @@ const sessionPayload = (overrides = {}) => ({
     subagents: 1,
     forks: 1,
     deletable: true,
+    preview: 'fixture-preview',
     blocking: null,
     artifacts: ['sessions/--ws--/session-…/session.v4.jsonl.zstd', 'storages/session_projcache/sessions/session-….json'],
     targets: [{ id: SESSION, origin: 'self' }, { id: CHILD, origin: 'subagent' }],
@@ -577,12 +578,18 @@ const rawPlan = exportsObject.planLocalCleanup([SESSION])
 check('值不是 JSON 时只报告不改写', rawPlan.edits.length === 1 && rawPlan.edits[0].hits === 0 && rawPlan.hits === 0, JSON.stringify(rawPlan.edits))
 check('值不是 JSON 时数据原样留着', storageData.get('dsh.workspace.view.v5') === `raw ${SESSION} text`)
 
-// 递归摘除只认"整段正好等于 id"，不会误伤夹在字符串里的 id。
-const nested = { a: { b: [SESSION, 'keep', { c: SESSION }] }, d: SESSION, e: `x${SESSION}y` }
-const stripped = exportsObject.stripSessionIds(nested, new Set([SESSION]))
-check('递归摘除：数组元素与属性值被摘掉', stripped.hits === 3, String(stripped.hits))
-check('递归摘除：夹在字符串里的 id 不动', stripped.value.e === `x${SESSION}y`)
-check('递归摘除：无关值不动', stripped.value.a.b[0] === 'keep' && stripped.value.a.b.length === 2, JSON.stringify(stripped.value.a.b))
+const otherDraft = `dsh.conversation.${OTHER}`
+const pluginKey = `third-party.${SESSION}`
+seedStorage({
+  [otherDraft]: { draft: SESSION },
+  [pluginKey]: { id: SESSION },
+  'dsh.workspace.view.v5': { lastLabel: SESSION, sessionOrderByAccount: { work: [SESSION, OTHER] } },
+})
+exportsObject.applyLocalCleanup([SESSION])
+check('其他会话草稿中即使写着目标 id 也不会被改', JSON.parse(storageData.get(otherDraft)).draft === SESSION)
+check('第三方私有键原样保留', JSON.parse(storageData.get(pluginKey)).id === SESSION)
+check('共享视图只改已知顺序字段', JSON.parse(storageData.get('dsh.workspace.view.v5')).lastLabel === SESSION
+  && JSON.parse(storageData.get('dsh.workspace.view.v5')).sessionOrderByAccount.work.join() === OTHER)
 
 /* ── 2. 菜单行 ─────────────────────────────────────────────────────────── */
 
@@ -714,7 +721,7 @@ const posts = requests.filter((item) => item.options && item.options.method === 
 check('确认后只发一次 POST', posts.length === 1, String(posts.length))
 check('删成功后重拉一次会话列表（否则旧行会显示成「未分组」）', sessionRefreshes === 1, String(sessionRefreshes))
 check('POST 带确认标记', JSON.parse(posts[0].options.body).confirm === 'delete-session')
-check('POST 只带 id、确认标记与预览过的悬空引用', Object.keys(JSON.parse(posts[0].options.body)).sort().join() === 'confirm,dangling,id')
+check('POST 带上已确认的清单版本', JSON.parse(posts[0].options.body).preview === 'fixture-preview')
 check('POST 里回传的是看过的那份悬空引用', JSON.parse(posts[0].options.body).dangling.join() === GHOST)
 
 const doneTree = renderDialog()
@@ -1037,13 +1044,12 @@ buttonWithText(busyDone, '完成').props.onClick()
 
 const FORK_A = 'session-aaaa1111-1111-4111-8111-111111111111'
 const FORK_B = 'session-bbbb2222-2222-4222-8222-222222222222'
+const forkOptions = [
+  { id: FORK_A, title: '分支甲', archived: true, live: false },
+  { id: FORK_B, title: '', archived: false, live: false },
+]
 responses.push({
-  body: sessionPayload({
-    optionalForks: [
-      { id: FORK_A, title: '分支甲', archived: true, live: false },
-      { id: FORK_B, title: '', archived: false, live: false },
-    ],
-  }),
+  body: sessionPayload({ optionalForks: forkOptions }),
 })
 openViaMenu()
 await tick()
@@ -1052,11 +1058,42 @@ check('列出可选的派生会话', textOf(forkTree).includes('分支甲') && t
 check('未归档的那一项说明原因', textOf(forkTree).includes('先归档'))
 check('未归档的那一项不可勾', choiceBoxesOf(forkTree).some((box) => box.props.disabled === true))
 check('默认一个都不勾（默认值必须最保守）', choiceBoxesOf(forkTree).every((box) => box.props.checked !== true))
-check('没勾 fork 时不提醒清单外的内容', !textOf(renderDialog()).includes('不在上方清单'))
+acknowledge(forkTree)
+seedStorage({ [`dsh.conversation.${FORK_A}`]: { draft: 'fork 草稿' } })
+responses.push({
+  body: sessionPayload({
+    preview: 'selected-fork-preview',
+    optionalForks: forkOptions,
+    targets: [{ id: SESSION }, { id: CHILD }, { id: FORK_A }],
+    artifacts: ['fork transcript'],
+    registryTargets: [{ id: FORK_A, workspaces: [{ id: 'fork-ws' }], available: true }],
+  }),
+})
 choiceBoxesOf(forkTree)[0].props.onChange({ target: { checked: true } })
 check('勾上后状态可见', choiceBoxesOf(renderDialog())[0].props.checked === true)
-check('勾 fork 后提醒它不在上方清单里', textOf(renderDialog()).includes('不在上方清单'))
+check('更新清单时不能确认删除', findByClass(renderDialog(), 'dsm-button-danger').props.disabled === true)
+await tick()
+const forkPreview = renderDialog()
+check('新清单显示 fork 的文件、登记与本地状态', ['fork transcript', 'fork-ws', `dsh.conversation.${FORK_A}`]
+  .every((entry) => textOf(forkPreview).includes(entry)))
+check('勾选变更后必须重新确认', ackBoxOf(forkPreview).props.checked === false)
 acknowledge(renderDialog())
+
+responses.push({ ok: false, status: 409, body: { ok: false, code: 'PREVIEW_CHANGED', error: '删除清单已变化' } })
+responses.push({
+  body: sessionPayload({
+    preview: 'updated-fork-preview',
+    optionalForks: forkOptions,
+    targets: [{ id: SESSION }, { id: CHILD }, { id: FORK_A }],
+    artifacts: ['updated fork transcript'],
+  }),
+})
+findByClass(renderDialog(), 'dsm-button-danger').props.onClick()
+await tick()
+const updatedFork = renderDialog()
+check('旧清单被拒后自动显示新清单并要求再确认', textOf(updatedFork).includes('updated fork transcript')
+  && textOf(updatedFork).includes('重新确认') && ackBoxOf(updatedFork).props.checked === false)
+acknowledge(updatedFork)
 
 requests.length = 0
 responses.push({
@@ -1073,6 +1110,7 @@ findByClass(renderDialog(), 'dsm-button-danger').props.onClick()
 await tick()
 const forkPost = JSON.parse(requests.filter((item) => item.options && item.options.method === 'POST')[0].options.body)
 check('POST 带上勾选的派生会话', Array.isArray(forkPost.extraRoots) && forkPost.extraRoots.join() === FORK_A, JSON.stringify(forkPost))
+check('重试提交的是重新确认的清单版本', forkPost.preview === 'updated-fork-preview')
 check('没勾的一个都不带', !forkPost.extraRoots.includes(FORK_B))
 check('回显连带删除的派生会话', textOf(renderDialog()).includes('连带删掉了 1 个派生会话'))
 buttonWithText(renderDialog(), '完成').props.onClick()

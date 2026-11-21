@@ -12,6 +12,7 @@
 import childProcess from 'node:child_process'
 import { createHash } from 'node:crypto'
 import fs from 'node:fs'
+import fsp from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -405,15 +406,24 @@ function invoke(method, { url = '/', headers = { host: '127.0.0.1:19387' }, body
 }
 
 const exists = (relative) => fs.existsSync(path.join(tempHome, relative))
-const inspect = (id) => invoke('GET', { url: `/dsh-session-manager-delete/api?id=${id}` })
-const remove = (id, options = {}) => invoke('POST', {
-  ...options,
-  body: JSON.stringify({
-    id,
-    confirm: options.confirm === undefined ? plugin.CONFIRM_TOKEN : options.confirm,
-    ...(Array.isArray(options.dangling) ? { dangling: options.dangling } : {}),
-  }),
-})
+function inspect(id, { ctx, extraRoots = [] } = {}) {
+  const search = new URLSearchParams({ id })
+  for (const fork of extraRoots) search.append('extraRoots', fork)
+  return invoke('GET', { ctx, url: `${plugin.ROUTE}?${search}` })
+}
+async function remove(id, options = {}) {
+  const { json } = options.preview === undefined ? await inspect(id, options) : {}
+  return invoke('POST', {
+    ...options,
+    body: JSON.stringify({
+      id,
+      confirm: options.confirm ?? plugin.CONFIRM_TOKEN,
+      dangling: options.dangling,
+      extraRoots: options.extraRoots,
+      preview: options.preview ?? json?.session?.preview,
+    }),
+  })
+}
 
 /* ── 1. 身份闸门 ───────────────────────────────────────────────────────── */
 
@@ -875,7 +885,7 @@ drift.globalRecord.pinnedSessionIds = [DRIFT]
 
 const driftDelete = await plugin.deleteSession(drift.ctx, DRIFT)
 check('悬空引用不影响删除成功', driftDelete.status === 200, String(driftDelete.status))
-check('复核发现并剪掉了悬空引用', driftDelete.payload.registry.steps.some((step) => step.includes('悬空引用')), JSON.stringify(driftDelete.payload.registry.steps))
+check('从原始记录找到工作区归属并摘掉', driftDelete.payload.registry.steps.some((step) => step.includes('移出工作区')), JSON.stringify(driftDelete.payload.registry.steps))
 check('工作区记录里不再引用它', !drift.record.sessionIds.includes(DRIFT), JSON.stringify(drift.record.sessionIds))
 check('归档集合里不再引用它', !drift.globalRecord.archivedSessionIds.includes(DRIFT), JSON.stringify(drift.globalRecord.archivedSessionIds))
 check('置顶集合里不再引用它', !drift.globalRecord.pinnedSessionIds.includes(DRIFT), JSON.stringify(drift.globalRecord.pinnedSessionIds))
@@ -1595,7 +1605,96 @@ check('根会话的归属被摘掉', ownDetaches.includes(`ws-1:${OWNROOT}`), JS
 check('派生会话的另一个工作区归属也被摘掉', ownDetaches.includes(`ws-2:${OWNFORK}`), JSON.stringify(ownDetaches))
 check('两个工作区的成员都清干净', !ownHome.record.sessionIds.includes(OWNROOT) && !ownForkRecord.sessionIds.includes(OWNFORK), JSON.stringify([ownHome.record.sessionIds, ownForkRecord.sessionIds]))
 
-/* ── 24. 卸载 ──────────────────────────────────────────────────────────── */
+/* ── 24. 磁盘故障、登记和清单变化 ──────────────────────────────────────── */
+
+const SAFE_DISK = 'session-51515151-5151-4151-8151-515151515151'
+const safeCache = writeFile(cacheRelative(SAFE_DISK), 'projection')
+writeFile(logRelative(SAFE_DISK), 'transcript')
+sessions.push({ header: { id: SAFE_DISK } })
+const diskHome = createContext()
+diskHome.archive(SAFE_DISK)
+diskHome.record.sessionIds = [SAFE_DISK]
+const originalRm = fsp.rm
+try {
+  fsp.rm = async (file, options) => {
+    if (file === safeCache) throw Object.assign(new Error('cache is locked'), { code: 'EACCES' })
+    return originalRm(file, options)
+  }
+  const result = await plugin.deleteSession(diskHome.ctx, SAFE_DISK)
+  check('投影缓存删除失败时保留对话日志和登记', result.status === 500
+    && exists(logRelative(SAFE_DISK)) && fs.existsSync(safeCache) && diskHome.record.sessionIds.includes(SAFE_DISK))
+} finally {
+  fsp.rm = originalRm
+}
+
+const originalReadDir = fs.readdirSync
+try {
+  fs.readdirSync = (dir, options) => {
+    if (dir === plugin.PROJECTION_ROOT) throw Object.assign(new Error('projection directory is inaccessible'), { code: 'EACCES' })
+    return originalReadDir(dir, options)
+  }
+  const result = await plugin.deleteSession(diskHome.ctx, SAFE_DISK)
+  check('缓存目录读失败时保留日志、缓存和登记', result.status === 500
+    && exists(logRelative(SAFE_DISK)) && fs.existsSync(safeCache) && diskHome.record.sessionIds.includes(SAFE_DISK))
+} finally {
+  fs.readdirSync = originalReadDir
+}
+
+const UNKNOWN = 'session-52525252-5252-4252-8252-525252525252'
+const unknownHome = createContext()
+unknownHome.hold(UNKNOWN)
+unknownHome.record.sessionIds = [UNKNOWN]
+unknownHome.globalRecord.archivedSessionIds = [UNKNOWN]
+const getAgent = unknownHome.services.agents.get
+unknownHome.services.agents.get = (id) => {
+  if (id === UNKNOWN) throw new Error('agent state unavailable')
+  return getAgent(id)
+}
+const unknownSweep = await plugin.sweepDanglingReferences(unknownHome.ctx)
+check('存活状态查询失败时保留会话登记', unknownSweep.swept === 0
+  && unknownHome.record.sessionIds.includes(UNKNOWN) && unknownHome.globalRecord.archivedSessionIds.includes(UNKNOWN))
+
+const SCOPE = 'session-53535353-5353-4353-8353-535353535353'
+const SCOPE_FORK = 'session-54545454-5454-4454-8454-545454545454'
+const SCOPE_CHILD = '55515151-5151-4151-8151-515151515151'
+for (const id of [SCOPE, SCOPE_FORK]) writeFile(logRelative(id), 'transcript')
+sessions.push({ header: { id: SCOPE } }, { header: { id: SCOPE_FORK, parentSession: SCOPE } })
+const scopeHome = createContext()
+scopeHome.archive(SCOPE)
+scopeHome.archive(SCOPE_FORK)
+const selected = { ctx: scopeHome.ctx, extraRoots: [SCOPE_FORK] }
+const scopePreview = (await inspect(SCOPE, selected)).json.session
+check('勾选 fork 后预览包含其会话、文件与登记', scopePreview.targets.some(({ id }) => id === SCOPE_FORK)
+  && scopePreview.artifacts.some((file) => file.includes(SCOPE_FORK)) && scopePreview.registryTargets.some(({ id }) => id === SCOPE_FORK))
+
+writeFile(logRelative(SCOPE_CHILD), 'new child')
+sessions.push({ header: { id: SCOPE_CHILD, parentSession: SCOPE_FORK, origin: 'subagent' } })
+const stale = await remove(SCOPE, { ...selected, preview: scopePreview.preview })
+check('新增子代理时旧清单退回重新确认', stale.status === 409 && stale.json.code === 'PREVIEW_CHANGED'
+  && [SCOPE, SCOPE_FORK, SCOPE_CHILD].every((id) => exists(logRelative(id))))
+const noPreview = await invoke('POST', { ctx: scopeHome.ctx, body: JSON.stringify({ id: SCOPE, confirm: plugin.CONFIRM_TOKEN }) })
+check('旧客户端缺少清单版本时无法删除', noPreview.status === 409 && noPreview.json.code === 'PREVIEW_CHANGED')
+
+const updatedScope = (await inspect(SCOPE, selected)).json.session
+let activityChecks = 0
+scopeHome.ctx.waterfall = async (event, input, next) => {
+  if (input.sessionId === SCOPE && ++activityChecks === 2) {
+    scopeHome.globalRecord.archivedSessionIds = [SCOPE]
+  }
+  return next()
+}
+const restoredFork = await remove(SCOPE, { ...selected, preview: updatedScope.preview })
+check('最终检查时拒删刚取消归档的 fork', restoredFork.status === 409
+  && String(restoredFork.json.error).includes(SCOPE_FORK)
+  && [SCOPE, SCOPE_FORK, SCOPE_CHILD].every((id) => exists(logRelative(id))))
+
+delete scopeHome.ctx.waterfall
+scopeHome.archive(SCOPE_FORK)
+const confirmedScope = await remove(SCOPE, selected)
+check('重新确认后可以删除完整范围', confirmedScope.status === 200
+  && [SCOPE, SCOPE_FORK, SCOPE_CHILD].every((id) => !exists(logRelative(id))))
+
+/* ── 25. 卸载 ──────────────────────────────────────────────────────────── */
 
 let disposeErrors = 0
 for (let index = disposers.length - 1; index >= 0; index -= 1) {
