@@ -102,8 +102,16 @@ npm run build          # 改了 lib/client.js 必须重新构建
 
 ### 更新与卸载
 
-- **更新**：在插件管理器里更新/重装，然后重启 DSH。
+- **更新**：在插件管理器里更新/重装，然后**完全退出并重启 DSH**。宿主半区与浏览器半区必须同时换成新代码；只更新一半时，旧 bundle 不会携带清单版本，删除请求会被宿主以 409 拒绝。
 - **卸载**：在插件管理器里卸载即可。插件不写自己的状态文件，卸载后没有额外残留。
+
+升级后可以核对真正装上的版本（不是看有没有报错）：
+
+```bash
+node -p "require('<profile 目录>/node_modules/dsh-session-manager-delete/package.json').version"
+```
+
+完整的版本变更见 [CHANGELOG.md](CHANGELOG.md)。
 
 ---
 

@@ -1,6 +1,6 @@
 {
   "name": "dsh-session-manager-delete",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "DSH 会话删除插件：只删已归档的会话，先关终端、注销宿主内存，再删日志与缓存、摘工作区登记、清浏览器本地状态；删完不需要刷新页面。",
   "keywords": [
     "dsh",
@@ -34,7 +34,8 @@
     "scripts",
     "docs",
     "cordis.patch.yml",
-    "README.md"
+    "README.md",
+    "CHANGELOG.md"
   ],
   "dsh": {
     "bundle": {
