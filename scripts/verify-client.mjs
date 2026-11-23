@@ -430,7 +430,8 @@ const observed = typeof contribution.observe === 'function' ? contribution.obser
 check('观察目标就是归档列表', Array.isArray(observed) && observed[0] === workspaceList, JSON.stringify(observed))
 check('未归档时不出删除入口', contribution.resolve({ sessionId: SESSION, displayTitle: '标题' }).length === 0)
 archivedSessionIds.push(SESSION)
-check('已归档时出删除入口', contribution.resolve({ sessionId: SESSION, displayTitle: '标题' }).length === 1)
+const archivedActions = contribution.resolve({ sessionId: SESSION, displayTitle: '标题' })
+check('已归档时出单删和批量删除入口', archivedActions.map((action) => action.label).join() === [t('menu'), t('batchMenu')].join())
 check('旧座位也能按归档状态隐藏', exportsObject.SessionMenuRow({ t, sessionId: SESSION, displayTitle: '示例会话', canDelete: () => false, store: { open: () => {} } }) === null)
 menuCtx.get = baseMenuGet
 
@@ -1127,7 +1128,83 @@ check('提醒不影响确认勾选', Boolean(ackBoxOf(warnTree)))
 buttonWithText(warnTree, '取消').props.onClick()
 check('取消后关闭', renderDialog() === null)
 
-/* ── 15. 尺寸格式化 ────────────────────────────────────────────────────── */
+/* ── 15. 批量选择与部分完成 ────────────────────────────────────────────── */
+
+const defaultGet = ctx.get
+ctx.get = (name) => name === 'workspaces' ? { list: workspaceList } : defaultGet(name)
+seedLocalState()
+requests.length = 0
+const batchCandidates = [
+  { id: SESSION, title: '侧栏布局原型', workspaces: [{ id: 'ws-1', title: '桌面端' }] },
+  { id: OTHER, title: '旧桥接调试', workspaces: [{ id: 'ws-2', title: '插件开发' }] },
+  { id: FORK_A, title: '打包流程试跑', workspaces: [{ id: 'ws-2', title: '插件开发' }] },
+]
+const batchInfo = {
+  deletable: true, preview: 'batch-preview', subagents: 1, bytes: 2048, busy: { sessions: [], total: 0 },
+  targets: [{ id: SESSION }, { id: CHILD }, { id: OTHER }],
+  roots: [
+    { id: SESSION, title: '侧栏布局原型', childIds: [CHILD], blocking: null },
+    { id: OTHER, title: '旧桥接调试', childIds: [], blocking: null },
+  ],
+}
+responses.push({ body: { ok: true, candidates: batchCandidates } })
+buttonWithText(renderMenu(), t('batchMenu')).props.onClick()
+await tick()
+let batchTree = renderDialog()
+check('旧菜单入口可打开批量弹窗并自动勾选打开它的会话', textOf(batchTree).includes('已选 1 条')
+  && nodesOf(batchTree).some((node) => node.type === 'legend' && textOf(node) === '插件开发'))
+findByClass(batchTree, 'dsm-batch-search').props.onChange({ target: { value: '桥接' } })
+batchTree = renderDialog()
+check('搜索保留已有勾选并显示隐藏数量', textOf(batchTree).includes('其中 1 条被筛选隐藏')
+  && textOf(batchTree).includes('旧桥接调试') && !textOf(batchTree).includes('打包流程试跑'))
+checkboxOf(batchTree).props.onChange({ target: { checked: true } })
+responses.push({ body: { ok: true, batch: batchInfo } })
+buttonWithText(renderDialog(), t('batchPreview')).props.onClick()
+await tick()
+batchTree = renderDialog()
+const batchPreviewBody = JSON.parse(requests.at(-1).options.body)
+check('全选只加入搜索命中项，预览同时包含筛选隐藏项', batchPreviewBody.action === 'preview-batch'
+  && batchPreviewBody.ids.join() === [SESSION, OTHER].join() && textOf(batchTree).includes('侧栏布局原型')
+  && textOf(batchTree).includes('另含 1 个子代理会话'))
+check('批量预览必须重新勾选确认', findByClass(batchTree, 'dsm-button-danger').props.disabled === true)
+acknowledge(batchTree)
+responses.push({ ok: false, status: 409, body: { ok: false, code: 'PREVIEW_CHANGED' } },
+  { body: { ok: true, batch: { ...batchInfo, preview: 'batch-updated' } } })
+findByClass(renderDialog(), 'dsm-button-danger').props.onClick()
+await tick()
+batchTree = renderDialog()
+check('旧批量清单退回预览并取消确认', textOf(batchTree).includes(t('previewChanged')) && !ackBoxOf(batchTree).props.checked)
+acknowledge(batchTree)
+const refreshesBeforeBatch = sessionRefreshes
+responses.push({ ok: false, status: 500, body: {
+  ok: false, deletedIds: [SESSION, CHILD],
+  rootResults: [
+    { id: SESSION, status: 'deleted' },
+    { id: OTHER, status: 'incomplete', error: '文件被占用' },
+  ],
+} })
+findByClass(renderDialog(), 'dsm-button-danger').props.onClick()
+await tick()
+batchTree = renderDialog()
+const batchDeleteBody = JSON.parse(requests.at(-1).options.body)
+check('提交使用最新清单，逐项显示部分完成结果', batchDeleteBody.action === 'delete-batch'
+  && batchDeleteBody.preview === 'batch-updated' && textOf(batchTree).includes('侧栏布局原型 · 已删除')
+  && textOf(batchTree).includes('文件被占用'))
+check('部分成功时只清理宿主确认的本地状态并刷新列表', !storageData.has(`dsh.conversation.${SESSION}`)
+  && !storageData.has(`dsh.conversation.${CHILD}`) && storageData.has(`dsh.user-questions.drafts.v1.${OTHER}`)
+  && sessionRefreshes === refreshesBeforeBatch + 1)
+responses.push({ body: { ok: true, batch: {
+  ...batchInfo, roots: [batchInfo.roots[1]], targets: [{ id: OTHER }], subagents: 0, preview: 'batch-retry',
+} } })
+buttonWithText(batchTree, t('batchRetry')).props.onClick()
+await tick()
+check('重试只重新预览未完成会话且需要再确认', JSON.parse(requests.at(-1).options.body).ids.join() === OTHER
+  && !ackBoxOf(renderDialog()).props.checked && findByClass(renderDialog(), 'dsm-button-danger').props.disabled)
+buttonWithText(renderDialog(), t('batchBack')).props.onClick()
+buttonWithText(renderDialog(), t('cancel')).props.onClick()
+ctx.get = defaultGet
+
+/* ── 16. 尺寸格式化 ────────────────────────────────────────────────────── */
 
 check('0 字节', exportsObject.formatBytes(0) === '0 B')
 check('KB', exportsObject.formatBytes(2048) === '2.0 KB')

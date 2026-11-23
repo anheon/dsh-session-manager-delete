@@ -38,6 +38,7 @@ DSH 的一个会话不只是一份日志。它同时存在于五个地方：
 ## 能做什么
 
 - 只对**已归档**的会话开放删除；未归档时确认框会直接告诉你怎么归档。
+- 支持跨工作区勾选多个已归档会话，一次预览并确认删除。
 - 删除前给出完整清单：会话 id、文件与字节数、登记变更、浏览器本地状态、悬空引用、可选连带删除的派生会话。
 - 有工作在跑时，给一个默认勾选的「先停掉正在跑的工作」；停完再验一次，停不下来就拒删。
 - 子代理会话随父会话一起删（它们在侧栏里本来就没有入口）；fork 出来的可见会话默认保留，可在确认框里勾选一并删除。
@@ -135,6 +136,15 @@ node -p "require('<profile 目录>/node_modules/dsh-session-manager-delete/packa
 
 如果重拉失败（宿主服务掉线等），完成页会明确写「侧栏列表没有刷新成功……刷新页面就会消失」，不会把已经完成的删除说成失败。
 
+### 批量删除
+
+1. 在任意已归档会话的「…」菜单点「批量删除会话…」。打开弹窗时会勾选这条会话。
+2. 按工作区挑选会话，或按标题搜索。「全选当前结果」只勾选搜索命中的条目。切换搜索会保留原有勾选，底部会显示被筛选隐藏的勾选数量。
+3. 点「预览删除」，核对每条会话及其子代理、预计释放的空间。Fork 会话需要单独勾选。有条目变得不可删时，按提示把它移出，再确认更新后的清单。
+4. 勾选永久删除确认框并提交。结果页逐项显示处理结果。完成的会话会自动从侧栏移除，其他条目可以重新预览后再试。
+
+一次最多删除 200 个会话，包含会随选中会话一起删除的子代理。
+
 ### 已经删过、但界面还留着「未分组」怎么办
 
 那是旧版本留下的悬空登记。打开任意一个已归档会话的删除确认框，点「现在清理」；它只走工作区登记的官方接口，不删任何会话。也可以重启一次 DSH，之后不会再产生新的。
@@ -203,6 +213,9 @@ flowchart LR
 | `GET /dsh-session-manager-delete/api?id=<sessionId>&extraRoots=<forkId>` | 只读预览。每个选中的 fork 对应一个可选的 `extraRoots` 参数，可删除时返回 `session.preview` |
 | `POST /dsh-session-manager-delete/api` `{id, confirm, preview, dangling, extraRoots?, stop?}` | 删除。带上同一组选项和最近一次确认的 `session.preview` |
 | `POST /dsh-session-manager-delete/api` `{repair: true, confirm}` | 只清工作区登记里的悬空引用，不删磁盘 |
+| `GET /dsh-session-manager-delete/api?batch=candidates` | 列出可在批量弹窗中选择的已归档会话 |
+| `POST /dsh-session-manager-delete/api` `{action: 'preview-batch', ids}` | 只读预览多条选中会话及其子代理 |
+| `POST /dsh-session-manager-delete/api` `{action: 'delete-batch', ids, preview, confirm, stop?}` | 提交同一份已确认清单。若执行中部分完成，返回逐项结果与已确认删除的 ID |
 
 返回状态：
 
