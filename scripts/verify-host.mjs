@@ -1694,6 +1694,82 @@ const confirmedScope = await remove(SCOPE, selected)
 check('重新确认后可以删除完整范围', confirmedScope.status === 200
   && [SCOPE, SCOPE_FORK, SCOPE_CHILD].every((id) => !exists(logRelative(id))))
 
+/* ── 25. 批量选中独立会话、预览变化与部分成功 ───────────────────────────── */
+
+const BATCH_FIRST = 'session-56565656-5656-4656-8656-565656565656'
+const BATCH_SECOND = 'session-57575757-5757-4757-8757-575757575757'
+const BATCH_CHILD = '58585858-5858-4858-8858-585858585858'
+const BATCH_GRANDCHILD = '59595959-5959-4959-8959-595959595959'
+const BATCH_FORK = 'session-60606060-6060-4060-8060-606060606060'
+const batchRoots = [BATCH_FIRST, BATCH_SECOND]
+const batchTargets = [...batchRoots, BATCH_CHILD, BATCH_GRANDCHILD]
+for (const id of [...batchTargets, BATCH_FORK]) writeFile(logRelative(id), 'batch transcript')
+sessions.push(
+  { header: { id: BATCH_FIRST } },
+  { header: { id: BATCH_SECOND } },
+  { header: { id: BATCH_CHILD, parentSession: BATCH_SECOND, origin: 'subagent' } },
+  { header: { id: BATCH_GRANDCHILD, parentSession: BATCH_CHILD, origin: 'subagent' } },
+  { header: { id: BATCH_FORK, parentSession: BATCH_FIRST } },
+)
+const batchHome = createContext()
+batchHome.globalRecord.archivedSessionIds = []
+for (const id of [BATCH_FIRST, BATCH_SECOND, BATCH_FORK, BATCH_CHILD]) batchHome.archive(id)
+batchHome.record.sessionIds = [BATCH_FIRST, BATCH_SECOND, BATCH_FORK]
+const batchPost = (body) => invoke('POST', { ctx: batchHome.ctx, body: JSON.stringify(body) })
+const previewBatch = (ids) => batchPost({ action: 'preview-batch', ids })
+const deleteBatch = (ids, preview) => batchPost({ action: 'delete-batch', ids, preview, confirm: plugin.CONFIRM_TOKEN })
+const candidates = await invoke('GET', { ctx: batchHome.ctx, url: `${plugin.ROUTE}?batch=candidates` })
+check('批量候选只列已归档的可见会话并带工作区名称', candidates.status === 200
+  && candidates.json.candidates.map(({ id }) => id).join() === [...batchRoots, BATCH_FORK].join()
+  && candidates.json.candidates.every((row) => row.workspaces[0]?.title === batchHome.record.title), JSON.stringify(candidates))
+const batchPreview = (await previewBatch([BATCH_SECOND, BATCH_FIRST, BATCH_FIRST])).json.batch
+check('批量预览对根去重、包含多层子代理且保留未选 fork', batchPreview.deletable
+  && batchPreview.roots.map(({ id }) => id).join() === batchRoots.join()
+  && batchPreview.subagents === 2 && batchPreview.targets.length === 4
+  && !batchPreview.targets.some(({ id }) => id === BATCH_FORK)
+  && batchTargets.every((id) => exists(logRelative(id))))
+check('批量接口校验会话 id、确认和上限', (await previewBatch(['../../outside'])).status === 400
+  && (await previewBatch(tooManyGhosts)).status === 400
+  && (await batchPost({ action: 'delete-batch', ids: batchRoots, preview: batchPreview.preview })).status === 400)
+const crossBatch = await invoke('POST', {
+  ctx: batchHome.ctx,
+  headers: { host: '127.0.0.1:19387', origin: 'https://other.example' },
+  body: JSON.stringify({ action: 'delete-batch', ids: batchRoots, preview: batchPreview.preview, confirm: plugin.CONFIRM_TOKEN }),
+})
+check('批量接口拒绝跨站请求', crossBatch.status === 403)
+const expandedBatch = await deleteBatch([...batchRoots, BATCH_FORK], batchPreview.preview)
+check('扩大选择范围后不能复用旧清单', expandedBatch.status === 409
+  && expandedBatch.json.code === 'PREVIEW_CHANGED' && exists(logRelative(BATCH_FORK)))
+batchHome.globalRecord.archivedSessionIds = batchHome.globalRecord.archivedSessionIds.filter((id) => id !== BATCH_SECOND)
+const blockedBatch = await deleteBatch(batchRoots, batchPreview.preview)
+check('批量中取消归档一项会挡住整批并点名', blockedBatch.status === 409
+  && blockedBatch.json.session.roots.some((root) => root.id === BATCH_SECOND && root.blocking)
+  && batchTargets.every((id) => exists(logRelative(id))))
+batchHome.archive(BATCH_SECOND)
+
+const lockedDirectory = path.dirname(path.join(tempHome, logRelative(BATCH_GRANDCHILD)))
+let partialBatch
+try {
+  fsp.rm = async (file, options) => {
+    if (file === lockedDirectory) throw Object.assign(new Error('batch child is locked'), { code: 'EACCES' })
+    return originalRm(file, options)
+  }
+  partialBatch = await deleteBatch(batchRoots, batchPreview.preview)
+} finally {
+  fsp.rm = originalRm
+}
+check('一项失败时只回报完整删净的会话', partialBatch.status === 500
+  && partialBatch.json.deletedIds.join() === BATCH_FIRST
+  && partialBatch.json.rootResults.some((row) => row.id === BATCH_SECOND && row.status === 'incomplete' && row.error.includes('locked'))
+  && !batchHome.record.sessionIds.includes(BATCH_FIRST) && batchHome.record.sessionIds.includes(BATCH_SECOND))
+check('子代理删除失败时保留父链供重试', [BATCH_SECOND, BATCH_CHILD, BATCH_GRANDCHILD].every((id) => exists(logRelative(id))))
+const retryBatch = (await previewBatch([BATCH_SECOND])).json.batch
+const retriedBatch = await deleteBatch([BATCH_SECOND], retryBatch.preview)
+check('可以只重试未完成项，且不触碰未选 fork', retriedBatch.status === 200
+  && retriedBatch.json.rootResults[0].status === 'deleted'
+  && [BATCH_SECOND, BATCH_CHILD, BATCH_GRANDCHILD].every((id) => !exists(logRelative(id)))
+  && exists(logRelative(BATCH_FORK)))
+
 /* ── 25. 卸载 ──────────────────────────────────────────────────────────── */
 
 let disposeErrors = 0
